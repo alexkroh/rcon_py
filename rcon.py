@@ -5,11 +5,15 @@ import socket
 import argparse
 import struct
 import sys
+import readline
+import rlcompleter
 
-RCON_DEFAULT_IP="52.62.86.177"
-#RCON_DEFAULT_PORT="28015"
+RCON_DEFAULT_IP="localhost"
 RCON_DEFAULT_PORT="28016"
-RCON_DEFAULT_PASSWORD="subseven"
+RCON_DEFAULT_PASSWORD="CHANGE_ME"
+HISTORY_FILENAME=".history"
+LOGFILE=sys.stdout
+LOGFILE=None
 
 ### Stolen constants
 ID_MAX              = 255
@@ -49,81 +53,87 @@ class RCON:
 		# Pop the message length from the buffer
 		msg_len = struct.unpack('I', self.buf[:4])[0]
 		self.buf = self.buf[4:]
+		while len(self.buf) < msg_len:
+			self.buf = self.buf + self.socket.recv(self.MAX_PACKET_SIZE)
 		# Pop the message from the buffer
 		ret_buf, self.buf = self.buf[:msg_len - 2], self.buf[msg_len:]
 		return ret_buf
 
 	def recv_data(self):
 		data = self.recv()
-		(a, b), msg = struct.unpack('II', data[:8]), data[8:]
+		(id, type), msg = struct.unpack('II', data[:8]), data[8:]
 		if msg == '':
 			msg = None
 		# Is the data a log message
-		if (a, b) == (0, 4):
+		if (id, type) == (0, 4):
 			if self.logfile is not None:
-				self.logfile.write("%d %d"%(a, b))
 				self.logfile.write(msg)
 			return self.recv_data()
-		elif (a, b) == (self.MAX_INT, 0):
+		elif (id, type) == (self.MAX_INT, 0):
 			return self.recv_data() 
 		else:
-			return a, b, msg
+			return id, type, msg
 
-	def send_data(self, type, payload='', id=404):
+	def send_data(self, id, type, payload=None):
 		if payload is None:
 			payload = ''
 		pkt = struct.pack('II', id, type) + payload + "\0\0"
 		pkt = struct.pack('I', len(pkt)) + pkt
 		self.send(pkt)
 
-	def get_chat(self):
-		self.send_data(COMMAND, 'getchat', ID_CHAT)
-
-	def get_player_list(self):
-		self.send_data(COMMAND, 'listplayers', ID_PLAYERS)
-
 	def send_auth(self):
-		self.send_data(PASSWORD, self.password, ID_PASSWORD)
-		print "Send auth. Waiting for response"
+		self.send_data(ID_PASSWORD, PASSWORD, self.password)
 		# expect (1, 0). This seems to be an ACK
-		a, resp, _ = self.recv_data()
+		id, type, _ = self.recv_data()
 		# Authentication response now comes through
-		a, resp, _ = self.recv_data()
-		if a == self.MAX_INT:
-			print "Authentication failed (%d)"%(resp)
+		id, type, _ = self.recv_data()
+		if id == self.MAX_INT:
+			print "Authentication failed (%d)"%(type)
 			return -1
-		elif a == 1:
-			print "Authentication successful"
+		elif id == ID_PASSWORD:
 			return 0
 		else:
-			print "Authentication failed: Unknown response (%x %x)"%(a, resp)
+			print "Authentication failed: Unknown response (%x %x)"%(id, type)
 			return -1
 
 	def send_command(self, msg):
 		# Send the command
-		self.send_data(0x02, msg, 0xa7);
+		self.send_data(0xa7, 0x02, msg);
 		# Receive connection status
-		a, b, msg = self.recv_data()
-		if (a, b) != (167, 0):
-			print "(%d %d)"%(a, b)
+		id, type, msg = self.recv_data()
+		if (id, type) != (167, 0):
+			print "(%d %d)"%(id, type)
 		print msg
 
 	def get_config(self):
 		# Send the command
-		self.send_data(0x05, None, 0x3e35)
+		self.send_data(0x3e35, 0x05)
 		# Receive connection status
-		a, b, msg = self.recv_data()
-		print "a=%d b=%d"%(a, b)
+		id, type, msg = self.recv_data()
+		print "(%d %d)"%(id, type)
 		print msg
-		a, b, msg = self.recv_data()
-		print "a=%d b=%d"%(a, b)
+		id, type, msg = self.recv_data()
+		print "(%d %d)"%(id, type)
 		print msg
-		a, b, msg = self.recv_data()
-		print "a=%d b=%d"%(a, b)
+		id, type, msg = self.recv_data()
+		print "(%d %d)"%(id, type)
 		print msg
 
 
-
+class MyCompleter(object):
+	def __init__(self, options):
+		self.options = sorted(options)
+	def complete(self, text, state):
+		if state == 0:  # on first trigger, build possible matches
+			if text:  # cache matches (entries that start with entered text)
+				self.matches = [s for s in self.options if s and s.startswith(text)]
+			else:  # no text entered, all matches possible
+				self.matches = self.options[:]
+		# return match indexed by state
+		try: 
+			return self.matches[state]
+		except IndexError:
+			return None
 
 def parse_args():
 	parser = argparse.ArgumentParser(description="RCON client software")
@@ -133,28 +143,43 @@ def parse_args():
 	options = parser.parse_args()
 	return options
 
+
+class Console:
+	def __init__(self, history_filename):
+		completer = MyCompleter(["status", "stats", "users", "players", "say"])
+		readline.set_completer(completer.complete)
+		readline.parse_and_bind('tab: complete')
+		open(history_filename, 'a').close()
+		readline.read_history_file(history_filename)
+	def input(self,prompt):
+		return raw_input(prompt)
+	def close(self):
+		readline.write_history_file(HISTORY_FILENAME)
+
 if __name__ == '__main__':
 	options = parse_args()
-	rcon = RCON(options.ip, int(options.port), options.password, None);
+	rcon = RCON(options.ip, int(options.port), options.password, LOGFILE);
 	rcon.connect()
 	if rcon.send_auth():
-		print "Failed to send auth"
+		print "Authentication failed"
 	else:
-		print "Auth successful"
-	rcon.send_command("status")
-	rcon.send_command("users")
-	while True:
-		try: 
-			sys.stdout.write("$ ")
-			line = sys.stdin.readline().strip()
-			if line == '':
+		print "Authentication successful"
+		print
+		rcon.send_command("status")
+		rcon.send_command("users")
+		con = Console(HISTORY_FILENAME);
+		while True:
+			try: 
+				input = con.input("$ ")
+				rcon.send_command(input)
+			except KeyboardInterrupt:
 				break;
-			else:
-				rcon.send_command(line)
-		except KeyboardInterrupt:
-			break;
-	print
+			except EOFError:
+				break;
+		con.close();
+		print
 	rcon.disconnect()
+
 	print "Disconnected from RCON"
 
 
