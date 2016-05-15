@@ -16,24 +16,41 @@ LOGFILE=sys.stdout
 LOGFILE=None
 
 ### Stolen constants
-ID_MAX              = 255
 ID_CHAT             = 65535
 ID_PLAYERS          = 65534
-ID_PASSWORD         = 1
-RESPONSE            = 0
-COMMAND             = 2
-PASSWORD            = 3
 ###########
 
+#Threading:
+#import time,readline,thread,sys
+#
+#def noisy_thread():
+#    while True:
+#        time.sleep(3)
+#        sys.stdout.write('\r'+' '*(len(readline.get_line_buffer())+2)+'\r')
+#        print 'Interrupting text!'
+#        sys.stdout.write('> ' + readline.get_line_buffer())
+#        sys.stdout.flush()
+#
+#thread.start_new_thread(noisy_thread, ())
+#while True:
+#    s = raw_input('> ')
 
 class RCON:
 	MAX_PACKET_SIZE=4096*1024
 	MAX_INT=0xffffffff
-	def __init__(self, ip, port, password, logfile=sys.stdout):
+	TYPE_RESPONSE=0
+	TYPE_COMMAND=2
+	TYPE_PASSWORD=3
+	ID_PASSWORD=1
+	ID_RCON_COMMAND=0xa7
+	def __init__(self, ip, port, password, logfile=None):
 		self.ip = ip
 		self.address = (ip, port)
 		self.password = password
-		self.logfile=logfile
+		if logfile is not None:
+			self.logfile=open(logfile, "a")
+		else:
+			self.logfile=sys.stdout
 		self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		self.buf = ''
 
@@ -66,8 +83,7 @@ class RCON:
 			msg = None
 		# Is the data a log message
 		if (id, type) == (0, 4):
-			if self.logfile is not None:
-				self.logfile.write(msg)
+			self.logfile.write(msg+"\n")
 			return self.recv_data()
 		elif (id, type) == (self.MAX_INT, 0):
 			return self.recv_data() 
@@ -82,7 +98,7 @@ class RCON:
 		self.send(pkt)
 
 	def send_auth(self):
-		self.send_data(ID_PASSWORD, PASSWORD, self.password)
+		self.send_data(self.ID_PASSWORD, self.TYPE_PASSWORD, self.password)
 		# expect (1, 0). This seems to be an ACK
 		id, type, _ = self.recv_data()
 		# Authentication response now comes through
@@ -90,7 +106,7 @@ class RCON:
 		if id == self.MAX_INT:
 			print "Authentication failed (%d)"%(type)
 			return -1
-		elif id == ID_PASSWORD:
+		elif id == self.ID_PASSWORD:
 			return 0
 		else:
 			print "Authentication failed: Unknown response (%x %x)"%(id, type)
@@ -98,27 +114,15 @@ class RCON:
 
 	def send_command(self, msg):
 		# Send the command
-		self.send_data(0xa7, 0x02, msg);
+		self.send_data(self.ID_RCON_COMMAND, self.TYPE_COMMAND, msg);
 		# Receive connection status
 		id, type, msg = self.recv_data()
-		if (id, type) != (167, 0):
+		if (id, type) != (self.ID_RCON_COMMAND, self.TYPE_RESPONSE):
 			print "(%d %d)"%(id, type)
 		print msg
 
-	def get_config(self):
-		# Send the command
-		self.send_data(0x3e35, 0x05)
-		# Receive connection status
-		id, type, msg = self.recv_data()
-		print "(%d %d)"%(id, type)
-		print msg
-		id, type, msg = self.recv_data()
-		print "(%d %d)"%(id, type)
-		print msg
-		id, type, msg = self.recv_data()
-		print "(%d %d)"%(id, type)
-		print msg
-
+	def give(self, username="DarkSchine", item="apple", qty="1"):
+		self.send_data(0x4c40, self.TYPE_COMMAND, "inventory.giveto \"%s\" \"%s\" \"%s\""%(username, item, qty))
 
 class MyCompleter(object):
 	def __init__(self, options):
@@ -140,13 +144,14 @@ def parse_args():
 	parser.add_argument('-i', '--ip'      , dest='ip'      , default=RCON_DEFAULT_IP,       help="The IP address of the server to connect to."    )
 	parser.add_argument('-p', '--port'    , dest='port'    , default=RCON_DEFAULT_PORT,     help="The port on which the RCON server is listening.")
 	parser.add_argument('-w', '--password', dest='password', default=RCON_DEFAULT_PASSWORD, help="The password that the RCON server expects."     )
+	parser.add_argument('-l', '--logfile' , dest='logfile' , default=None,                  help="Specify a file for logging RCON output"         )
 	options = parser.parse_args()
 	return options
 
 
 class Console:
 	def __init__(self, history_filename):
-		completer = MyCompleter(["status", "stats", "users", "players", "say"])
+		completer = MyCompleter(["status", "stats", "users", "players", "say", "inventory.giveto"])
 		readline.set_completer(completer.complete)
 		readline.parse_and_bind('tab: complete')
 		open(history_filename, 'a').close()
@@ -158,7 +163,7 @@ class Console:
 
 if __name__ == '__main__':
 	options = parse_args()
-	rcon = RCON(options.ip, int(options.port), options.password, LOGFILE);
+	rcon = RCON(options.ip, int(options.port), options.password, options.logfile);
 	rcon.connect()
 	if rcon.send_auth():
 		print "Authentication failed"
@@ -171,7 +176,10 @@ if __name__ == '__main__':
 		while True:
 			try: 
 				input = con.input("$ ")
-				rcon.send_command(input)
+				if input == "test3":
+					rcon.give()
+				else:
+					rcon.send_command(input)
 			except KeyboardInterrupt:
 				break;
 			except EOFError:
@@ -181,7 +189,6 @@ if __name__ == '__main__':
 	rcon.disconnect()
 
 	print "Disconnected from RCON"
-
 
 
 
